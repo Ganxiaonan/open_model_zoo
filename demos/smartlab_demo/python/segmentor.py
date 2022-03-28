@@ -149,7 +149,7 @@ class SegmentorMstcn:
 
         self.ImgSizeHeight = 224
         self.ImgSizeWidth = 224
-        self.SegBatchSize = 24
+        self.SegBatchSize = 48
         self.EmbedBufferCombined = []
 
         # mobilenet-v3-small
@@ -162,6 +162,7 @@ class SegmentorMstcn:
         self.mobileNet_request = self.mobileNet.create_infer_request()
 
         self.mstcn_net = core.read_model(mstcn_path)
+        self.mstcn_net.reshape({"input": [1, 1152, self.SegBatchSize]})
         self.mstcn = core.compile_model(model=self.mstcn_net, device_name=device)
         self.mstcn_input_keys = self.mstcn.inputs
         self.mstcn_output_keys = self.mstcn.outputs

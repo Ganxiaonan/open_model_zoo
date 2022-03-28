@@ -83,7 +83,7 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
             else:  # mstcn
                 # detector.inference(frame_top, frame_side)
                 future_detector = executor.submit(detector.inference_multithread, frame_top, frame_side)
-                segmentor_result = segmentor.inference(frame_top=frame_top, frame_side=frame_side,
+                seg_results = segmentor.inference(frame_top=frame_top, frame_side=frame_side,
                                                        frame_index=frame_counter)
 
             if future_detector is not None and future_detector.done():
@@ -94,7 +94,7 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
                 if future_segmentor is not None and future_segmentor.done():
                     print("multiview segmentor done")
                     segmentor_result = future_segmentor.result()
-                    top_seg_results, side_seg_results = segmentor_result[0], segmentor_result[1]
+                    seg_results, _ = segmentor_result[0], segmentor_result[1]
 
             current_time = time.time()
             current_frame = frame_counter
@@ -108,14 +108,14 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
             ''' The score evaluation module need to merge the results of the two modules and generate the scores '''
             if detector_result is not None and segmentor_result is not None:
                 top_det_results, side_det_results = detector_result[0], detector_result[1]
-                # state, scoring, keyframe = evaluator.inference(
-                #     top_det_results=top_det_results,
-                #     side_det_results=side_det_results,
-                #     action_seg_results=top_seg_results,
-                #     frame_top=frame_top,
-                #     frame_side=frame_side,
-                #     frame_counter=frame_counter)
-                #
+                state, scoring, keyframe = evaluator.inference(
+                    top_det_results=top_det_results,
+                    side_det_results=side_det_results,
+                    action_seg_results=seg_results,
+                    frame_top=frame_top,
+                    frame_side=frame_side,
+                    frame_counter=frame_counter)
+
                 # display.display_result(
                 #     frame_top=frame_top,
                 #     frame_side=frame_side,
