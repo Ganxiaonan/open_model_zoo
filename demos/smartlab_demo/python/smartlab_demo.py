@@ -81,16 +81,14 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
                 future_detector = executor.submit(detector.inference_multithread, frame_top, frame_side)
                 future_segmentor = executor.submit(segmentor.inference_async, frame_top, frame_side, frame_counter)
             else:  # mstcn
-                # detector.inference(frame_top, frame_side)
-                future_detector = executor.submit(detector.inference_multithread, frame_top, frame_side)
+                detector.inference(frame_top, frame_side)
                 seg_results = segmentor.inference(frame_top=frame_top, frame_side=frame_side,
-                                                       frame_index=frame_counter)
-
-            if future_detector is not None and future_detector.done():
-                detector_result = future_detector.result()
-                future_detector = None
-
+                                                  frame_index=frame_counter)
             if args.mode == "multiview":
+                if future_detector is not None and future_detector.done():
+                    print("multiview detector done")
+                    detector_result = future_detector.result()
+                    future_detector = None
                 if future_segmentor is not None and future_segmentor.done():
                     print("multiview segmentor done")
                     segmentor_result = future_segmentor.result()
@@ -116,18 +114,18 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
                     frame_side=frame_side,
                     frame_counter=frame_counter)
 
-                # display.display_result(
-                #     frame_top=frame_top,
-                #     frame_side=frame_side,
-                #     side_seg_results=side_seg_results,
-                #     top_seg_results=top_seg_results,
-                #     top_det_results=top_det_results,
-                #     side_det_results=side_det_results,
-                #     scoring=scoring,
-                #     state=state,
-                #     keyframe=keyframe,
-                #     frame_counter=frame_counter,
-                #     fps=fps)
+                display.display_result(
+                    frame_top=frame_top,
+                    frame_side=frame_side,
+                    side_seg_results=seg_results,
+                    top_seg_results=seg_results,
+                    top_det_results=top_det_results,
+                    side_det_results=side_det_results,
+                    scoring=scoring,
+                    state=state,
+                    keyframe=keyframe,
+                    frame_counter=frame_counter,
+                    fps=fps)
 
         if cv2.waitKey(1) in {ord('q'), ord('Q'), 27}:  # Esc
             break
