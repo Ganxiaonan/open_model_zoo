@@ -23,7 +23,7 @@ from argparse import ArgumentParser, SUPPRESS
 from display import Display
 from evaluator import Evaluator
 from openvino.runtime import Core
-from segmentor import Segmentor, SegmentorMstcn
+from segmentor import Segmentor
 from object_detection.detector import Detector
 
 
@@ -49,8 +49,10 @@ def build_argparser():
                       type=str)
     args.add_argument('--mode', default='multiview', help='Optional. action recognition mode: multiview or mstcn',
                       type=str)
-    args.add_argument('-m_en', '--m_encoder', help='Required. Path to encoder model.', required=True, type=str)
-    args.add_argument('-m_de', '--m_decoder', help='Required. Path to decoder model.', required=True, type=str)
+    args.add_argument('-m_en', '--m_encoder', help='Required for mstcn mode. Path to encoder model.', required=False, type=str)
+    args.add_argument('-m_en_t', '--m_encoder_top', help='Required for multivew mode. Path to encoder model.', required=False, type=str)
+    args.add_argument('-m_en_s', '--m_encoder_side', help='Required for multivew mode. Path to encoder model.', required=False, type=str)
+    args.add_argument('-m_de', '--m_decoder', help='Required for multivew mode. Path to decoder model.', required=False, type=str)
 
     return parser
 
@@ -64,7 +66,7 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
     total_frame_processed_in_interval = 0.0
     detector_result = None
     segmentor_result = None
-
+    # multithread setup
     executor = concurrent.futures.ThreadPoolExecutor()
     future_detector = None
     future_segmentor = None
@@ -80,11 +82,6 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
             if args.mode == "multiview" and frame_counter % 10 == 0:
                 future_detector = executor.submit(detector.inference_multithread, frame_top, frame_side)
                 future_segmentor = executor.submit(segmentor.inference_async, frame_top, frame_side, frame_counter)
-            else:  # mstcn
-                detector.inference(frame_top, frame_side)
-                seg_results = segmentor.inference(frame_top=frame_top, frame_side=frame_side,
-                                                  frame_index=frame_counter)
-            if args.mode == "multiview":
                 if future_detector is not None and future_detector.done():
                     print("multiview detector done")
                     detector_result = future_detector.result()
@@ -93,7 +90,10 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
                     print("multiview segmentor done")
                     segmentor_result = future_segmentor.result()
                     seg_results, _ = segmentor_result[0], segmentor_result[1]
-
+            else:  # mstcn
+                detector.inference(frame_top, frame_side)
+                seg_results = segmentor.inference(frame_top=frame_top, frame_side=frame_side,
+                                                  frame_index=frame_counter)
             current_time = time.time()
             current_frame = frame_counter
             if (current_time - old_time > interval_second):
@@ -101,7 +101,6 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
                 fps = total_frame_processed_in_interval / (current_time - old_time)
                 interval_start_frame = current_frame
                 old_time = current_time
-            print(fps)
 
             ''' The score evaluation module need to merge the results of the two modules and generate the scores '''
             if detector_result is not None and segmentor_result is not None:
@@ -135,7 +134,7 @@ def main():
     args = build_argparser().parse_args()
     core = Core()
 
-    ''' Object Detection Variables'''
+    ''' Object Detection Variables '''
     detector = Detector(
         core,
         args.device,
