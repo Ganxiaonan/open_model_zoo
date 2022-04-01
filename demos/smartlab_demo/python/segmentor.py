@@ -77,12 +77,12 @@ class Segmentor:
 
         ### run ###
         self.infer_encoder_side_request.infer(inputs=
-            {self.encoder_side_input_keys['input_image']: buffer_side,
-            self.encoder_side_input_keys['shifted_input']: self.shifted_tesor_side})
+                                              {self.encoder_side_input_keys['input_image']: buffer_side,
+                                               self.encoder_side_input_keys['shifted_input']: self.shifted_tesor_side})
 
         self.infer_encoder_top_request.infer(inputs=
-            {self.encoder_top_input_keys['input_image']: buffer_top,
-            self.encoder_top_input_keys['shifted_input']: self.shifted_tesor_top})
+                                             {self.encoder_top_input_keys['input_image']: buffer_top,
+                                              self.encoder_top_input_keys['shifted_input']: self.shifted_tesor_top})
 
         ### get tensors ###
         feature_vector_side = self.infer_encoder_side_request.get_tensor(
@@ -125,7 +125,6 @@ class Segmentor:
                                                    {self.encoder_top_input_keys[0]: buffer_top,
                                                     self.encoder_top_input_keys[1]: self.shifted_tesor_top})
 
-
         while True:
             if self.infer_encoder_side_request.wait_for(0) and self.infer_encoder_top_request.wait_for(0):
                 feature_vector_side = self.infer_encoder_side_request.get_tensor(
@@ -139,7 +138,8 @@ class Segmentor:
 
                 output = self.infer_decoder_request.infer(inputs={
                     self.decoder_input_keys['input_feature_1']: feature_vector_side.data,
-                    self.decoder_input_keys['input_feature_2']: feature_vector_top.data})[self.decoder_output_key['output']]
+                    self.decoder_input_keys['input_feature_2']: feature_vector_top.data})[
+                    self.decoder_output_key['output']]
 
                 ### yoclo classifier ###
                 isAction = (output.squeeze()[0] >= .5).astype(int)
@@ -169,7 +169,7 @@ class SegmentorMstcn:
 
         self.ImgSizeHeight = 224
         self.ImgSizeWidth = 224
-        self.SegBatchSize = 48
+        self.SegBatchSize = 24
         self.EmbedBufferCombined = []
 
         # mobilenet-v3-small
@@ -204,10 +204,7 @@ class SegmentorMstcn:
         self.feature_embedding(frame_top, frame_side)
         feature = self.mobileNet_request.get_tensor(self.mobileNet_output_key[0]).data.reshape(1152, 1)
         ### run mstcn++ ###
-        temp = self.action_segmentation(feature)
-        if temp and frame_index >= 264:
-            print(frame_index, temp)
-        return temp
+        return self.action_segmentation(feature)
 
     def feature_embedding(self, frame_top, frame_side):
 
