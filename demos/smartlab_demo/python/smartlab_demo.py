@@ -25,6 +25,9 @@ from evaluator import Evaluator
 from openvino.runtime import Core
 from segmentor import Segmentor, SegmentorMstcn
 from object_detection.detector import Detector
+import pandas as pd
+import os
+import datetime
 
 
 def build_argparser():
@@ -110,16 +113,16 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
             ''' The score evaluation module need to merge the results of the two modules and generate the scores '''
             if detector_result is not None:
                 top_det_results, side_det_results = detector_result[0], detector_result[1]
-                if seg_results is not None:
-                    state, scoring, keyframe = evaluator.inference(
-                        top_det_results=top_det_results,
-                        side_det_results=side_det_results,
-                        action_seg_results=seg_results,
-                        frame_top=frame_top,
-                        frame_side=frame_side,
-                        frame_counter=frame_counter,
-                        mode='batch_mode')
-                if frame_counter > 24:
+                # if seg_results is not None:
+                state, scoring, keyframe = evaluator.inference(
+                    top_det_results=top_det_results,
+                    side_det_results=side_det_results,
+                    action_seg_results=seg_results,
+                    frame_top=frame_top,
+                    frame_side=frame_side,
+                    frame_counter=frame_counter,
+                    mode='batch_mode')
+                if frame_counter > 48:
                     display.display_result(
                         frame_top=frame_top,
                         frame_side=frame_side,
@@ -135,6 +138,7 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
 
         if cv2.waitKey(1) in {ord('q'), ord('Q'), 27}:  # Esc
             break
+    return scoring,keyframe
 
 
 def main():
@@ -175,6 +179,7 @@ def main():
     video_loop(
         args, cap_top, cap_side, detector, segmentor, evaluator, display)
 
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
