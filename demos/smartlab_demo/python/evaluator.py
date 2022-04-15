@@ -5,23 +5,28 @@ import numpy as np
 class Evaluator(object):
     def __init__(self):
         '''Score Evaluation Variables'''
-        self.eval_vars = None
-        self.eval_cbs = None
-        self.top_scores_df = None
-        self.video_eval_box = None
-        self.front_scores_df = None
+    
+        # user-defined parameter
+        # MS stands for measuring score; IS stands for initial score
+        self.multiview_buffer_size = 40             # preprocessing, to filter action
+        self.mstcn_batchsize = 24                   # preprocessing, to filter action
+        self.mstcn_buffer_size = self.mstcn_batchsize * 2
+        self.filter_action_threshold = 15           # preprocessing, to filter action (action persist less than this duration will be ignored)
+        self.balance_threshold = 12                 # [IS_balance & MS_balance] 
+        self.balance_persist_duration_threshold = 60    # [MS_balance] 
+        self.rider_portion = 6                      # [IS_rider & MS_rider] divide the distance between 2 roundscrew1 into rider_portion portion, if rider falls in the first portion mean rider at zeroth position
+        self.rider_move_threshold = 20              # [MS_rider_tweezers] if rider moves more than this value, check if tweezers or hand is used to move rider
+        self.buffer_rider_size_limit = 30           # [MS_rider_tweezers]
+        self.use_tweezers_threshold = 350           # [MS_rider_tweezers & MS_weights_tweezers] if tweezer and rider/weight distance more than tweezer treshold, consider use hand instead of use tweezer
+        self.tweezers_warning_duration = 60         # [MS_rider_tweezers & MS_weights_tweezers] if score related to tweezers is 0 more than this duration/frames, score is 0 and unrevertible; else still revertible
+        self.initialise()
 
-        self.action_mode = 'skip_frame' #action mode can be 'skip_frame' (for mobilenet) or 'batch_mode' (for mstcn)
-        self.buffer_size = 40
-        self.batch_mode_batchsize = 24
-        self.batches_to_form_batchmode_buffer = 2
+    def initialise(self):
         self.buffer_pointer = 0
-        self.filter_action_threshold = 15
         self.frame_top_buffer = []
         self.frame_side_buffer = []
         self.action_buffer = []
-        self.action_pool_buffer = []
-        self.pool_buffer_size = self.batch_mode_batchsize*self.batches_to_form_batchmode_buffer
+        self.action_mstcn_buffer = []
         self.last_action = None
         self.top_obj_buffer = []
         self.side_obj_buffer = []
@@ -31,32 +36,25 @@ class Evaluator(object):
         self.first_put_take = False
         self.state = "Initial"
         self.buffer_rider = []    # buffer store coordinate of rider and tweezers to detect the move of rider, to evaluate the use of tweezers when adjust rider
-        self.buffer_rider_size_limit = 30
-        self.use_tweezers_threshold = 350   #200    # if tweezer and rider/weight distance more than tweezer treshold, consider use hand instead of use tweezer
         self.tweezers_warning = None
-        self.tweezers_warning_duration = 60
         self.is_object_put = False # if battery is put on tray no matter left or right, return True
         self.object_direction = None # if initially object put in left, then change to right or vice versa, use this parameter to know the change to give mark again
         self.is_weights_put = False    # if weight is put on tray no matter left or right, return True
         self.weights_direction = None # if initially weights put in right, then change to left or vice versa, use this parameter to know the change to give mark again
         self.can_tidy = False # if battery and weight has been put on the tray(no matter left/right), then can tidy becomes true
-        self.rider_move_threshold = 20 # if rider moves more than this value, check if tweezers or hand is used to move rider
         self.rider_zero=False
-        self.rider_portion = 6  # divide the distance between 2 roundscrew1 into rider_portion portion, if rider falls in the first portion mean rider at zeroth position
         self.num_weight_inside_tray = 0 # use in weight order evaluation -- only evaluate order when there is changes in this parameter
         self.record_weight_inside_tray = [] # use in weight order evaluation -- only evaluate order when there is changes in this parameter
-        self.balance_threshold = 12
         self.rider_tweezers_lock_mark = False
         self.weight_order_lock_mark = False
         self.is_weight_tweezers_lock_mark = False
         self.is_change_object_direction = False # mark given for object left will not change once given, except when this parameter become true 
         self.is_change_weights_direction = False
         self.balance_persist_duration = 0
-        self.balance_persist_duration_threshold = 60
         self.measuring_state_balance_lock_mark = False  # once this variable is True, even the balance is not balanced, measuring state balance mark still is given. \
                                                         # it only turns true if balance persists more than self.balance_persist_duration_threshold frames
                                                         # however, when weights are added to the tray, this lock will become False again
-        # scoring
+      
         self.scoring = {
             "initial_score_rider": 0,
             "initial_score_balance": 0,
@@ -89,7 +87,8 @@ class Evaluator(object):
         frame_top,
         frame_side,
         frame_counter,
-        mode='skip_frame'):
+        mode,
+        skip_frame_value):
         """
         Args:
             top_det_results:
@@ -100,12 +99,17 @@ class Evaluator(object):
             Progress of the frame index
         """
         self.frame_counter = frame_counter
-
-        action_seg_results = self.filter_action(action_seg_results, mode=self.action_mode)
+        self.mode = mode
+        self.skip_frame_value = skip_frame_value
+        if self.mode == 'multiview':
+            self.buffer_size = self.multiview_buffer_size
+        else: # mstcn
+            self.buffer_size = self.mstcn_buffer_size
+        action_seg_results = self.filter_action(action_seg_results, mode=mode)
         top_det_results, side_det_results = self.filter_object(top_det_results, side_det_results)
         frame_top, frame_side = self.filter_image(frame_top, frame_side)
 
-        if frame_counter > self.pool_buffer_size:
+        if frame_counter > self.buffer_size:
             self.classify_state(action_seg_results)
             self.top_object_dict = self.get_object(det_results=top_det_results)
             self.side_object_dict = self.get_object(det_results=side_det_results)
@@ -130,13 +134,13 @@ class Evaluator(object):
                     self.evaluate_end_tidy()                                # then can start evaluate whether they keep the apparatus
 
             self.check_score_validity()
-            display_frame_counter = frame_counter - self.pool_buffer_size
 
         else:
-            display_frame_counter = 0
             action_seg_results = None
 
-        return self.state, self.scoring, self.keyframe
+        display_frame_counter = frame_counter - self.buffer_size
+
+        return self.state, self.scoring, self.keyframe, action_seg_results, top_det_results, side_det_results, frame_top, frame_side, display_frame_counter
 
     def check_consecutive(self):
         '''
@@ -165,67 +169,97 @@ class Evaluator(object):
 
     def filter_action(self, action_seg_results, mode):
         """filter action segmentation result. action which persists less than filter_action_threshold frame will be ignored"""
-        if mode == 'skip_frame':
+        if mode == 'multiview':
             # at beginning of evaluation (less than self.buffer_size frame), action is None
-            self.pool_buffer_size = self.buffer_size
-            if len(self.action_buffer) < self.buffer_size:
+            if len(self.action_buffer) < self.multiview_buffer_size:
                 self.action_buffer.append(action_seg_results)
                 return None
             # after self.buffer_size frame, filtering of action occurs
-            elif len(self.action_buffer) == self.buffer_size:
+            elif len(self.action_buffer) == self.multiview_buffer_size:
                 if self.action_buffer[0] is not self.last_action:
                     self.last_action = self.check_consecutive()
                 self.action_buffer.pop(0)
                 self.action_buffer.append(action_seg_results)
                 return self.last_action
-        elif mode == 'batch_mode':
-            if action_seg_results != []:
-                self.action_pool_buffer.extend(action_seg_results)
-            if len(self.action_pool_buffer) > self.pool_buffer_size: # 48
-                self.action_pool_buffer = self.action_pool_buffer[self.batch_mode_batchsize: ] # self.batch_mode_batchsize: 24
+        elif mode == 'mstcn':
+            if action_seg_results != None:
+                self.action_mstcn_buffer.extend(action_seg_results)
+            if len(self.action_mstcn_buffer) > self.mstcn_buffer_size: # 48
+                self.action_mstcn_buffer = self.action_mstcn_buffer[self.mstcn_batchsize: ] # self.mstcn_batchsize: 24
                 self.buffer_pointer = 0
 
-            if len(self.action_pool_buffer) < self.pool_buffer_size:
+            if len(self.action_mstcn_buffer) < self.mstcn_buffer_size:
                 return None
-            elif len(self.action_pool_buffer) == self.pool_buffer_size:
+            elif len(self.action_mstcn_buffer) == self.mstcn_buffer_size:
                 self.buffer_pointer += 1
-                self.action_buffer = self.action_pool_buffer[self.buffer_pointer: self.buffer_pointer + self.batch_mode_batchsize]
+                self.action_buffer = self.action_mstcn_buffer[self.buffer_pointer: self.buffer_pointer + self.mstcn_batchsize]
                 if self.action_buffer[0] is not self.last_action:
                     self.last_action = self.check_consecutive()
-
                 return self.last_action
 
     def filter_object(self, top_det_results, side_det_results):
-        if len(self.top_obj_buffer) < self.buffer_size:
-            self.top_obj_buffer.append(top_det_results)
-            self.side_obj_buffer.append(side_det_results)
-            first_top_det_results = first_side_det_results = [np.array([[100, 500, 100, 500]]),[],np.array(['balance']),]
-        elif len(self.top_obj_buffer) == self.buffer_size:
-            first_top_det_results = self.top_obj_buffer.pop(0)
-            first_side_det_results = self.side_obj_buffer.pop(0)
-            self.top_obj_buffer.append(top_det_results)
-            self.side_obj_buffer.append(side_det_results)
-        else:
-            first_top_det_results = first_side_det_results = None
+        if self.mode == 'multiview':
+            if len(self.top_obj_buffer) < self.buffer_size:
+                self.top_obj_buffer.append(top_det_results)
+                self.side_obj_buffer.append(side_det_results)
+                first_top_det_results = first_side_det_results = [np.array([[100, 500, 100, 500]]),[],np.array(['balance']),]
+            elif len(self.top_obj_buffer) == self.buffer_size:
+                first_top_det_results = self.top_obj_buffer.pop(0)
+                first_side_det_results = self.side_obj_buffer.pop(0)
+                self.top_obj_buffer.append(top_det_results)
+                self.side_obj_buffer.append(side_det_results)
+            else:
+                print('len(self.top_obj_buffer) > self.buffer_size')
+            return first_top_det_results, first_side_det_results
 
-        return first_top_det_results, first_side_det_results
+        else: # mstcn
+            if len(self.top_obj_buffer) < self.mstcn_buffer_size:
+                self.top_obj_buffer.append(top_det_results)
+                self.side_obj_buffer.append(side_det_results)
+                first_top_det_results = first_side_det_results = [np.array([[100, 500, 100, 500]]),[],np.array(['balance']),]
+            elif len(self.top_obj_buffer) == self.mstcn_buffer_size:
+                first_top_det_results = self.top_obj_buffer.pop(0)
+                first_side_det_results = self.side_obj_buffer.pop(0)
+                self.top_obj_buffer.append(top_det_results)
+                self.side_obj_buffer.append(side_det_results)
+            else:
+                print('algorithm error: len(self.top_obj_buffer) > self.mstcn_buffer_size')
+            return first_top_det_results, first_side_det_results
 
     def filter_image(self, frame_top, frame_side):
-        if len(self.frame_top_buffer) < self.buffer_size:
-            self.frame_top_buffer.append(frame_top)
-            self.frame_side_buffer.append(frame_side)
-            h, w, c = frame_top.shape
-            blank_image = 255 * np.ones(shape=(h, w, c), dtype=np.uint8)
-            first_frame_top = first_frame_side = blank_image
-        elif len(self.frame_top_buffer) == self.buffer_size:
-            first_frame_top = self.frame_top_buffer.pop(0)
-            first_frame_side = self.frame_side_buffer.pop(0)
-            self.frame_top_buffer.append(frame_top)
-            self.frame_side_buffer.append(frame_side)
-        else:
-            first_frame_top = first_frame_side = None
+        if self.mode == 'multiview':
+            if len(self.frame_top_buffer) < self.buffer_size:
+                self.frame_top_buffer.append(frame_top)
+                self.frame_side_buffer.append(frame_side)
+                h, w, c = frame_top.shape
+                blank_image = 255 * np.ones(shape=(h, w, c), dtype=np.uint8)
+                first_frame_top = first_frame_side = blank_image
+            elif len(self.frame_top_buffer) == self.buffer_size:
+                first_frame_top = self.frame_top_buffer.pop(0)
+                first_frame_side = self.frame_side_buffer.pop(0)
+                self.frame_top_buffer.append(frame_top)
+                self.frame_side_buffer.append(frame_side)
+            else:
+                first_frame_top = first_frame_side = None
+                print('algorithm error: len(self.frame_top_buffer) > self.buffer_size')
 
-        return first_frame_top, first_frame_side
+            return first_frame_top, first_frame_side
+
+        elif self.mode == 'mstcn':
+            if len(self.frame_top_buffer) < self.mstcn_buffer_size:
+                self.frame_top_buffer.append(frame_top)
+                self.frame_side_buffer.append(frame_side)
+                h, w, c = frame_top.shape
+                blank_image = 255 * np.ones(shape=(h, w, c), dtype=np.uint8)
+                first_frame_top = first_frame_side = blank_image
+            elif len(self.frame_top_buffer) == self.mstcn_buffer_size:
+                first_frame_top = self.frame_top_buffer.pop(0)
+                first_frame_side = self.frame_side_buffer.pop(0)
+                self.frame_top_buffer.append(frame_top)
+                self.frame_side_buffer.append(frame_side)
+            else:
+                first_frame_top = first_frame_side = None
+            return first_frame_top, first_frame_side
 
     def get_object(self, det_results):
         '''
@@ -766,6 +800,7 @@ class Evaluator(object):
                     self.scoring['initial_score_balance'] = 1
                     self.keyframe['initial_score_balance'] = self.frame_counter
                 elif self.state == "Measuring" and self.is_object_put == True and self.scoring['end_score_tidy'] == 0:
+                    # print(f'{self.frame_counter},balance now, {self.balance_persist_duration}')
                     self.balance_persist_duration += 1
                     if self.balance_persist_duration > self.balance_persist_duration_threshold:
                         self.scoring['measuring_score_balance'] = 1
