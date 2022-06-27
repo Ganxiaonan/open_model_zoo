@@ -107,7 +107,9 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
                 cap_top.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 cap_side.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 frame_counter = 0
+                evaluator.reset()
             else:
+                evaluator.reset()
                 break
         else:
             if args.mode == "mstcn":
@@ -147,7 +149,7 @@ def video_loop(args, cap_top, cap_side, detector, segmentor, evaluator, display)
             ''' The score evaluation module need to merge the results of the two modules and generate the scores '''
             if detector_result is not None:
                 top_det_results, side_det_results = detector_result[0], detector_result[1]
-                state, scoring, keyframe, action_seg_results = evaluator.inference(
+                state, scoring, keyframe, action_seg_results,top_det_results, side_det_results = evaluator.inference(
                     top_det_results=top_det_results,
                     side_det_results=side_det_results,
                     action_seg_results=seg_results,
