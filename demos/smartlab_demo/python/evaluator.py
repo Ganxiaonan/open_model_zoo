@@ -11,8 +11,9 @@ class Evaluator(object):
         self.mstcn_batchsize = 24                   # preprocessing, to filter action
         self.mstcn_buffer_size = self.mstcn_batchsize * 2
         self.filter_action_threshold = 15           # preprocessing, to filter action (action persist less than this duration will be ignored)
-        self.balance_threshold = 12                 # [IS_balance & MS_balance] 
-        self.balance_persist_duration_threshold = 40    # [MS_balance] 
+        self.balance_threshold = 18                 # [IS_balance & MS_balance] 
+        self.balance_persist_duration_threshold = 35    # [MS_balance] 
+        self.balace_scale_portion = 5               # in the case where 2 roundscrew2 not detected,if pointerhead fall in middle of scale +- balance_scale_portion, considered scale balanced
         self.rider_portion = 6                      # [IS_rider & MS_rider] divide the distance between 2 roundscrew1 into rider_portion portion, if rider falls in the first portion mean rider at zeroth position
         self.rider_move_threshold = 20              # [MS_rider_tweezers] if rider moves more than this value, check if tweezers or hand is used to move rider
         self.buffer_rider_size_limit = 30           # [MS_rider_tweezers]
@@ -142,7 +143,7 @@ class Evaluator(object):
         display_frame_counter = frame_counter - self.buffer_size
 
         # return self.state, self.scoring, self.keyframe, action_seg_results, top_det_results, side_det_results, frame_top, frame_side, display_frame_counter
-        return self.state, self.scoring, self.keyframe, action_seg_results
+        return self.state, self.scoring, self.keyframe, action_seg_results, top_det_results,side_det_results
 
     def check_consecutive(self):
         """
@@ -205,6 +206,7 @@ class Evaluator(object):
     def filter_object(self, top_det_results, side_det_results):
         first_top_det_results = first_side_det_results = None
         if self.mode == 'multiview':
+            # store object into buffer to synchronize with action
             if len(self.top_obj_buffer) < self.buffer_size:
                 self.top_obj_buffer.append(top_det_results)
                 self.side_obj_buffer.append(side_det_results)
@@ -216,9 +218,14 @@ class Evaluator(object):
                 self.side_obj_buffer.append(side_det_results)
             else:
                 print('len(self.top_obj_buffer) > self.buffer_size')
+            # filter the object based on logic (eliminate not logic item,eg. 2 riders)
+            first_top_det_results = self.filter_one_object(first_top_det_results)
+            first_side_det_results = self.filter_one_object(first_side_det_results)
             return first_top_det_results, first_side_det_results
 
+
         else: # mstcn
+            # store object into buffer to synchronize with action
             if len(self.top_obj_buffer) < self.mstcn_buffer_size:
                 self.top_obj_buffer.append(top_det_results)
                 self.side_obj_buffer.append(side_det_results)
@@ -230,7 +237,70 @@ class Evaluator(object):
                 self.side_obj_buffer.append(side_det_results)
             else:
                 print('algorithm error: len(self.top_obj_buffer) > self.mstcn_buffer_size')
+            # filter the object based on logic (eliminate not logic item,eg. 2 riders)
+            first_top_det_results = self.filter_one_object(first_top_det_results)
+            first_side_det_results = self.filter_one_object(first_side_det_results)
             return first_top_det_results, first_side_det_results
+
+    def filter_one_object(self,det_results):
+        # for item that logically only can have one (eg.rider), filter based on confidence of object detector
+        rider_coor = []
+        balance_coor = []
+        pointerhead_coor = []
+        pointer_coor = []
+        roundscrew1_coor = []
+        roundscrew2_coor = []
+        tray_coor = []
+        pointer_sleeve_coor = []
+        support_sleeve_coor = []
+        ruler_coor = []
+        scale_coor = []
+        box_coor = []
+        battery_coor = []
+        tweezers_coor = []
+        weights_obj_coor = []
+
+        if det_results[0] is not None:
+            unwanted_list = []
+            for index,(obj, coor,confidence) in enumerate(zip(det_results[2], det_results[0],det_results[-1])):
+                if obj == 'rider':
+                    unwanted_list = self.get_unwanted_list(obj,'rider',rider_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'balance':
+                    unwanted_list = self.get_unwanted_list(obj,'balance',balance_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'pointerhead':
+                    unwanted_list = self.get_unwanted_list(obj,'pointerhead',pointerhead_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'pointer':
+                    unwanted_list = self.get_unwanted_list(obj,'pointer',pointer_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'pointer_sleeve':
+                    unwanted_list = self.get_unwanted_list(obj,'pointer_sleeve',pointer_sleeve_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'support_sleeve':
+                    unwanted_list = self.get_unwanted_list(obj,'support_sleeve',support_sleeve_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'ruler':
+                    unwanted_list = self.get_unwanted_list(obj,'ruler',ruler_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'scale':
+                    unwanted_list = self.get_unwanted_list(obj,'scale',scale_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'box':
+                    unwanted_list = self.get_unwanted_list(obj,'box',box_coor,index,coor,confidence,unwanted_list)
+                elif obj == 'tweezers':
+                    unwanted_list = self.get_unwanted_list(obj,'tweezers',tweezers_coor,index,coor,confidence,unwanted_list)
+               
+            for ele in sorted(unwanted_list, reverse = True):
+                det_results[0] = np.delete(det_results[0],ele,axis=0)
+                det_results[1] = np.delete(det_results[1],ele)
+                det_results[2] = np.delete(det_results[2],ele)
+                det_results[3] = np.delete(det_results[3],ele)
+        return det_results
+
+    def get_unwanted_list(self,obj,item,item_coor,index,coor,confidence,unwanted_list):
+        if obj == item:
+            if len(item_coor) == 0:
+                item_coor.append([index,coor,confidence])
+            else:
+                if item_coor[0][2]>confidence:
+                    unwanted_list.append(index)
+                else:
+                    unwanted_list.append(item_coor[0][0])
+            return unwanted_list
 
     def filter_image(self, frame_top, frame_side):
         if self.mode == 'multiview':
@@ -310,7 +380,7 @@ class Evaluator(object):
         weights_obj_coor = []
 
         if det_results[0] is not None:
-            for obj, coor in zip(det_results[2], det_results[0]):
+            for obj, coor,confidence in zip(det_results[2], det_results[0],det_results[-1]):
                 if obj == 'rider':
                     rider_coor.append(coor)
                 elif obj == 'balance':
@@ -364,7 +434,8 @@ class Evaluator(object):
                         'roundscrew2': roundscrew2_coor,
                         'support_sleeve': support_sleeve_coor,
                         'scale': scale_coor,
-                        'pointer': pointer_coor}
+                        'pointer': pointer_coor,
+                        'ruler':ruler_coor}
             return (i_object)
         elif self.state == 'Measuring':
             m_object = {'rider': rider_coor,
@@ -380,7 +451,8 @@ class Evaluator(object):
                         'tweezers': tweezers_coor,
                         'weights': weights_obj_coor,
                         'scale': scale_coor,
-                        'pointer': pointer_coor}
+                        'pointer': pointer_coor,
+                        'ruler':ruler_coor}
             return (m_object)
 
     def get_center_coordinate(self, coor):
@@ -392,6 +464,15 @@ class Evaluator(object):
         [big_x_min, big_y_min, big_x_max, big_y_max] = big_item_coor
         [small_center_x, small_center_y] = small_item_center_coor
         if small_center_x >= big_x_min and small_center_x <= big_x_max and small_center_y > big_y_min and small_center_y < big_y_max:
+            return True
+        else:
+            return False
+    
+    def is_outside(self, small_item_coor, big_item_coor):
+        [big_x_min, big_y_min, big_x_max, big_y_max] = big_item_coor
+        [small_x_min, small_y_min, small_x_max, small_y_max] = small_item_coor
+
+        if (small_x_min < big_x_min or small_x_max > big_x_max) and (small_y_min<big_y_min or small_y_max>big_y_max):
             return True
         else:
             return False
@@ -455,6 +536,7 @@ class Evaluator(object):
         """
         roundscrew1_coor = self.side_object_dict['roundscrew1']
         rider_coor = self.side_object_dict['rider']
+        ruler_coor = self.side_object_dict['ruler']
 
         # only evaluate rider_zero if 2 roundscrew1 and 1 rider are found
         if len(roundscrew1_coor) == 2 and len(rider_coor) == 1:
@@ -492,6 +574,13 @@ class Evaluator(object):
                     self.keyframe["initial_score_rider"] = self.frame_counter
                 elif self.state == 'Measuring':
                     self.rider_zero=False
+
+        elif len(ruler_coor) == 1 and len(rider_coor) == 1:
+            rider_center_coor = \
+                ((rider_coor[0][2] + rider_coor[0][0]) / 2,(rider_coor[0][3] + rider_coor[0][1]) / 2)
+            if rider_center_coor[0] < ruler_coor[0][0]+(ruler_coor[0][2]-ruler_coor[0][0])* 1/self.rider_portion:
+                if self.state == 'Measuring':
+                    self.rider_zero=True
 
     def evaluate_rider_tweezers(self):
         """
@@ -763,14 +852,8 @@ class Evaluator(object):
             if len(tray_coor) == 2 and len(battery_coors) > 0:
                 for battery_coor in battery_coors:
                     # if battery is removed from the left or right tray, and rider is pushed to zero. get mark
-                    battery_center_coor = self.get_center_coordinate(battery_coor)
-
-                    if self.is_inside(small_item_center_coor=battery_center_coor, big_item_coor=tray_coor[0]) \
-                        or self.is_inside(small_item_center_coor=battery_center_coor, big_item_coor=tray_coor[1]):
-
-                        self.scoring["end_score_tidy"] = 0
-                        self.keyframe["end_score_tidy"] = self.frame_counter 
-                    else:
+                    if self.is_outside(small_item_coor=battery_coor, big_item_coor=tray_coor[0]) \
+                        and self.is_outside(small_item_coor=battery_coor, big_item_coor=tray_coor[1]):
                         self.evaluate_rider()
                         if self.rider_zero == True:
                             self.scoring["end_score_tidy"] = 1
@@ -779,20 +862,21 @@ class Evaluator(object):
                             self.scoring["end_score_tidy"] = 0
                             self.keyframe["end_score_tidy"] = self.frame_counter
 
+                    else:
+                        self.scoring["end_score_tidy"] = 0
+                        self.keyframe["end_score_tidy"] = self.frame_counter 
+
             elif len(balance_coor) == 1 and len(battery_coors) > 0:
                 # if all battery are removed from the left or right tray, and rider is pushed to zero. get mark
                 for battery_coor in battery_coors:
-                    battery_center_coor = self.get_center_coordinate(battery_coor)
+
                     # divide balance into 2 parts, left balance and right balance
                     x_min, y_min, x_max, y_max = balance_coor[0]
                     left_balance = x_min, y_min, x_min + (x_max - x_min) / 2, y_max
                     right_balance = x_min + (x_max - x_min) / 2, y_min, x_max, y_max
             
-                    if self.is_inside(small_item_center_coor=battery_center_coor, big_item_coor=left_balance) \
-                        or self.is_inside(small_item_center_coor=battery_center_coor, big_item_coor=right_balance):
-                        self.scoring["end_score_tidy"] = 0
-                        self.keyframe["end_score_tidy"] = self.frame_counter
-                    else:
+                    if self.is_outside(small_item_coor=battery_coor, big_item_coor=left_balance) \
+                        and self.is_outside(small_item_coor=battery_coor, big_item_coor=right_balance):
                         self.evaluate_rider()
                         if self.rider_zero == True:
                             self.scoring["end_score_tidy"] = 1
@@ -800,6 +884,10 @@ class Evaluator(object):
                         else:
                             self.scoring["end_score_tidy"] = 0
                             self.keyframe["end_score_tidy"] = self.frame_counter
+
+                    else:
+                        self.scoring["end_score_tidy"] = 0
+                        self.keyframe["end_score_tidy"] = self.frame_counter
 
             elif len(battery_coors) == 0:
                 self.evaluate_rider()
@@ -814,6 +902,7 @@ class Evaluator(object):
         if self.state == 'Initial':
             self.scoring['initial_score_balance'] = 1
             self.keyframe['initial_score_balance'] = self.frame_counter
+        
         elif self.state == "Measuring" and self.is_object_put == True and self.scoring['end_score_tidy'] == 0:
             # double check object left in case 'end_score_tidy' not getting marks but object has been removed
             object_left_score, _ = self.evaluate_object_left_from_view(view='top')
@@ -845,7 +934,6 @@ class Evaluator(object):
         pointerhead_coor = self.top_object_dict['pointerhead']
         scale_coor = self.top_object_dict['scale']
         pointer_coor = self.top_object_dict['pointer']
-
         # if more than one pointerhead detected, estimate correct pointerhead from pointer coordinate (top center of pointer)
         if len(pointerhead_coor) > 1 and len(pointer_coor) == 1:
             estimate_coor = np.array([(pointer_coor[0][0] + pointer_coor[0][2]) / 2, pointer_coor[0][1]])
@@ -860,7 +948,7 @@ class Evaluator(object):
         # if no pointerhead detected, take top center of pointer as pointerhead
         if len(pointerhead_coor) == 0 and len(pointer_coor) == 1:
             x,y = (pointer_coor[0][0] + pointer_coor[0][2]) / 2, pointer_coor[0][1]
-            pointerhead_coor = [np.array([x, y, x, y])]
+            pointerhead_coor = [np.array([x,y,x,y])]
 
         # only evaluate balance when 2 roundscrew2, 1 scale, 1 pointerhead and 1 pointer are found
         if len(roundscrew2_coor) == 2 and len(pointerhead_coor) == 1:
@@ -890,6 +978,7 @@ class Evaluator(object):
             lower_limit = (rotated_left_coor[0] + rotated_right_coor[0]) / 2 - self.balance_threshold
             upper_limit = (rotated_left_coor[0] + rotated_right_coor[0]) / 2 + self.balance_threshold
 
+            # print(f'use roundscrew2 {rotated_center_coor[0] < upper_limit and rotated_center_coor[0] > lower_limit}: rotated_center_coor[0] {rotated_center_coor[0]} < upper_limit {upper_limit} and rotated_center_coor[0] {rotated_center_coor[0]} > lower_limit {lower_limit}')
             if rotated_center_coor[0] < upper_limit and rotated_center_coor[0] > lower_limit:
                 self.get_balance_mark()
             else:
@@ -898,17 +987,16 @@ class Evaluator(object):
         elif len(scale_coor)==1 and len(pointerhead_coor)==1:
             pointerhead_center_coor = [(pointerhead_coor[0][0] + pointerhead_coor[0][2]) / 2,\
                                             (pointerhead_coor[0][1] + pointerhead_coor[0][3]) / 2]
-            lower_limit = (scale_coor[0][0] + scale_coor[0][2]) / 2 - self.balance_threshold
-            upper_limit = (scale_coor[0][0] + scale_coor[0][2]) / 2 + self.balance_threshold
-            
+            lower_limit = (scale_coor[0][0]+scale_coor[0][2])/2 - (scale_coor[0][2] - scale_coor[0][0])/self.balace_scale_portion  
+            upper_limit = (scale_coor[0][0]+scale_coor[0][2])/2 + (scale_coor[0][2] - scale_coor[0][0])/self.balace_scale_portion  
             if pointerhead_center_coor[0] < upper_limit and pointerhead_center_coor[0] > lower_limit:
                 self.get_balance_mark()
             else:
                 self.lose_balance_mark()
         
         else:
-            print(f'frame{self.frame_counter} {len(roundscrew2_coor)} roundscrew2 & {len(pointerhead_coor)} pointerhead found & {len(scale_coor)} scale & {len(pointer_coor)} pointer found')
-
+            pass
+            
     def check_score_validity(self):
         for score_item, keyframe in self.keyframe.items():
             if keyframe == 0:
